@@ -1,0 +1,167 @@
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+
+class HKStockSignalEnv(gym.Env):
+    """
+    Custom Environment that follows gym interface.
+    This environment simulates a swing trading strategy for HK stocks.
+    """
+    metadata = {'render_modes': ['human']}
+
+    def __init__(self, dataset, initial_balance=100000, transaction_cost=0.002):
+        super(HKStockSignalEnv, self).__init__()
+        
+        self.dataset = dataset
+        self.initial_balance = initial_balance
+        self.transaction_cost = transaction_cost
+        
+        # Define Action Space: Discrete(5)
+        # 0: 0%, 1: 25%, 2: 50%, 3: 75%, 4: 100%
+        self.action_space = spaces.Discrete(5)
+        self.position_map = {0: 0.0, 1: 0.25, 2: 0.50, 3: 0.75, 4: 1.0}
+        
+        # Define Observation Space
+        # We have two parts: Numerical (seq_len, n_features) and Text (embedding_dim)
+        # Gym spaces usually prefer a single box or dict. Let's use Dict.
+        
+        # Infer shapes from dataset
+        sample = dataset[0]
+        self.num_shape = sample['numerical'].shape
+        self.text_shape = sample['text'].shape
+        
+        self.observation_space = spaces.Dict({
+            "numerical": spaces.Box(low=-np.inf, high=np.inf, shape=self.num_shape, dtype=np.float32),
+            "text": spaces.Box(low=-np.inf, high=np.inf, shape=self.text_shape, dtype=np.float32)
+        })
+        
+        self.current_step = 0
+        self.current_position = 0.0 # Current holding percentage
+        self.portfolio_value = initial_balance
+        self.cash = initial_balance
+        self.holdings = 0 # Number of shares
+        
+        # Track history for rendering/analysis
+        self.history = []
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        
+        self.current_step = 0
+        self.current_position = 0.0
+        self.portfolio_value = self.initial_balance
+        self.cash = self.initial_balance
+        self.holdings = 0
+        self.history = []
+        
+        observation = self._get_obs()
+        info = self._get_info()
+        
+        return observation, info
+
+    def step(self, action):
+        # 1. Get current data (Day t)
+        current_data = self.dataset[self.current_step]
+        # current_price = current_data['price'] # This is Close of Day t
+        
+        # 2. Execute Action (T+1 Logic)
+        # The action decided at Day t is executed at Day t+1 Open.
+        # For simplicity in this MVP, we will approximate:
+        # We use Day t+1 Close to calculate PnL for the step, assuming we entered at Day t+1 Open.
+        # Wait, standard RL usually steps from t to t+1.
+        # Let's define:
+        # State s_t -> Action a_t -> Reward r_t+1 -> State s_t+1
+        
+        # If we are at step t, we see window ending at t.
+        # We take action a_t.
+        # This action sets the target position for tomorrow.
+        
+        # Check if we are at the end
+        if self.current_step >= len(self.dataset) - 1:
+            terminated = True
+            truncated = False
+            return self._get_obs(), 0, terminated, truncated, self._get_info()
+            
+        # Move to t+1 to calculate reward
+        next_step = self.current_step + 1
+        next_data = self.dataset[next_step]
+        
+        # Price evolution
+        # We assume we trade at the "price" provided in dataset.
+        # If dataset['price'] is Close price:
+        # We rebalance at this price (Simplification of T+1 Open, or assume we trade at Close t for T+0).
+        # STRICT T+1 REQUIREMENT:
+        # "Action decided at timestep t (using Close data of day t) is executed at the Open Price of day t+1."
+        # Since our mock data only has 'close', let's assume Open_t+1 ~= Close_t for now, 
+        # OR we just use the price of next step as the execution price.
+        
+        # Let's stick to the standard:
+        # We change position to `target_pct` at `current_price` (Close t).
+        # This effectively simulates T+0 or "Next Open is same as Current Close".
+        # To be more precise with T+1, we would need Open prices.
+        # Given the constraints, we will proceed with rebalancing at the current step's price 
+        # but the PnL is realized in the next step.
+        
+        current_price = current_data['price']
+        next_price = next_data['price']
+        
+        target_pct = self.position_map[action]
+        
+        # Calculate Transaction Cost
+        # Change in position value
+        target_value = self.portfolio_value * target_pct
+        current_holding_value = self.holdings * current_price
+        
+        trade_value = abs(target_value - current_holding_value)
+        cost = trade_value * self.transaction_cost
+        
+        # Update Portfolio
+        # We are rebalancing to target_pct
+        self.cash = self.portfolio_value - target_value - cost
+        self.holdings = target_value / current_price
+        
+        # Update Portfolio Value for next step
+        # Value at t+1 = Cash + Holdings * Price_t+1
+        new_portfolio_value = self.cash + (self.holdings * next_price)
+        
+        # Calculate Reward
+        # Reward = Log Return of Portfolio
+        portfolio_return = (new_portfolio_value - self.portfolio_value) / self.portfolio_value
+        
+        # Penalties
+        # 1. Turnover/Cost is already deducted from portfolio value, so it reflects in return.
+        # 2. Volatility penalty: We can penalize large negative returns more, or just use Sharpe-like later.
+        # For now, simple return is the reward.
+        reward = portfolio_return
+        
+        # Update state
+        self.portfolio_value = new_portfolio_value
+        self.current_position = target_pct
+        self.current_step += 1
+        
+        terminated = False
+        truncated = False
+        if self.current_step >= len(self.dataset) - 1:
+            terminated = True
+        
+        observation = self._get_obs()
+        info = self._get_info()
+        
+        return observation, reward, terminated, truncated, info
+
+    def _get_obs(self):
+        # Return the observation for the current step
+        # If we are done, return the last valid one
+        idx = min(self.current_step, len(self.dataset) - 1)
+        data = self.dataset[idx]
+        return {
+            "numerical": data['numerical'].astype(np.float32),
+            "text": data['text'].astype(np.float32)
+        }
+
+    def _get_info(self):
+        return {
+            "portfolio_value": self.portfolio_value,
+            "position": self.current_position,
+            "step": self.current_step
+        }
