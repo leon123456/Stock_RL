@@ -37,18 +37,30 @@ $$ R_t = \frac{V_{t+1} - V_t}{V_t} $$
 
 ### 核心思想
 1.  **拉长视野**: 用户指出每日变动太快，建议看未来一周（5天）的数据。
-2.  **惩罚波动**: 抑制震荡市中的频繁开仓。
+### v2.0 奖励函数 (5日趋势 + 下行波动惩罚)
 
-### 公式
-$$ R_t = R_{trend} - \lambda_{vol} \times Volatility - \text{Cost} $$
+**目标**: 鼓励模型捕捉中期趋势，同时避免过度交易和下行风险。
 
-其中：
-*   **$R_{trend}$ (趋势奖励)**:
-    $$ R_{trend} = Position_t \times \frac{Price_{t+5} - Price_t}{Price_t} $$
-    *   如果当前做多，且未来5天涨了，给正奖励。
-    *   如果当前做多，且未来5天跌了，给负奖励。
-    *   *注意*: 这利用了训练时的全量数据“上帝视角”，但在推理(Backtest)时无法计算（Backtest只看净值曲线，不训练）。
+**公式**:
+```
+R_total = R_trend - R_vol - R_cost
 
+其中:
+R_trend = position * (price_t+5 - price_t) / price_t  # 5日趋势奖励
+R_vol = λ * σ_downside(recent_returns)                # 下行波动惩罚
+R_cost = transaction_cost / portfolio_value           # 交易成本惩罚
+```
+
+**关键改进**:
+1. **5日趋势奖励**: 不再只看当日涨跌，而是看未来5天的价格变化。如果模型持有多头仓位且未来5天上涨，则获得正奖励。
+2. **下行波动惩罚 (Downside Deviation)**: 
+   - 只计算**负收益**的标准差，类似于 Sortino Ratio 的思路
+   - 如果最近10天全是正收益，波动率惩罚为 0
+   - 如果有负收益，则根据下跌的剧烈程度进行惩罚
+   - 这样可以鼓励模型在上涨趋势中保持仓位，而不是因为"涨得太快"而清仓
+3. **交易成本**: 显式扣除，避免频繁换仓。
+
+**实现位置**: `src/environment.py` 的 `step()` 方法。
 *   **$Volatility$ (波动惩罚)**:
     $$ Volatility = \text{std}(Returns_{t-10...t}) $$
     *   惩罚近期的市场波动或策略波动。

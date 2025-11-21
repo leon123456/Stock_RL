@@ -142,15 +142,21 @@ class HKStockSignalEnv(gym.Env):
         # If we are 0% long (0.0) and price goes up 5%, reward is 0.0
         r_trend = self.current_position * trend_return
         
-        # 2. Volatility Penalty
-        # Calculate std of recent daily returns (e.g., last 10 days)
-        # We need to track daily portfolio returns
+        # 2. Volatility Penalty (Downside Deviation Only)
+        # Calculate std of recent NEGATIVE daily returns (e.g., last 10 days)
+        # We only penalize downside volatility, not upside volatility
         daily_ret = (new_portfolio_value - self.portfolio_value) / self.portfolio_value
         self.history.append(daily_ret)
         
         window_size = 10
         if len(self.history) > window_size:
-            recent_vol = np.std(self.history[-window_size:])
+            recent_returns = self.history[-window_size:]
+            # Filter only negative returns
+            downside_returns = [r for r in recent_returns if r < 0]
+            if len(downside_returns) > 0:
+                recent_vol = np.std(downside_returns)
+            else:
+                recent_vol = 0.0  # No downside, no penalty
         else:
             recent_vol = 0.0
             
