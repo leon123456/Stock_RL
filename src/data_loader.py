@@ -98,6 +98,48 @@ class DataLoader:
                 print(f"Error fetching data: {e}")
                 return pd.DataFrame()
 
+    def fetch_hsi_data(self, start_date, end_date):
+        """
+        Fetches HSI index data.
+        """
+        try:
+            df = ak.stock_hk_index_daily_sina(symbol="HSI")
+            df['date'] = pd.to_datetime(df['date'])
+            mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
+            df = df.loc[mask].copy()
+            df = df.sort_values('date').reset_index(drop=True)
+            # Calculate HSI return
+            df['hsi_return'] = df['close'].pct_change().fillna(0)
+            return df[['date', 'hsi_return']]
+        except Exception as e:
+            print(f"Error fetching HSI: {e}")
+            return pd.DataFrame()
+
+    def fetch_southbound_data(self, start_date, end_date):
+        """
+        Fetches Southbound holding data for the stock.
+        """
+        try:
+            df = ak.stock_hsgt_individual_em(symbol=self.symbol)
+            # Columns: 持股日期, 当日收盘价, 当日涨跌幅, 持股数量, 持股市值, 持股数量占发行股百分比, ...
+            # We want '持股数量' (Share Holding) or '持股数量占发行股百分比' (Holding Ratio)
+            # Let's use '持股数量' as a raw measure of smart money accumulation.
+            
+            df['date'] = pd.to_datetime(df['持股日期'])
+            df['southbound_holding'] = df['持股数量']
+            
+            mask = (df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))
+            df = df.loc[mask].copy()
+            df = df.sort_values('date').reset_index(drop=True)
+            
+            # Calculate daily change in holding (Net Inflow proxy)
+            df['southbound_change'] = df['southbound_holding'].diff().fillna(0)
+            
+            return df[['date', 'southbound_holding', 'southbound_change']]
+        except Exception as e:
+            print(f"Error fetching Southbound: {e}")
+            return pd.DataFrame()
+
     def _add_indicators(self, df):
         """
         Adds technical indicators to the DataFrame.
@@ -105,6 +147,11 @@ class DataLoader:
         # 1. Moving Averages
         df['ma5'] = df['close'].rolling(window=5).mean()
         df['ma20'] = df['close'].rolling(window=20).mean()
+        
+        # Explicit Price vs MA (User Request)
+        # Ratio > 1 means price above MA
+        df['price_div_ma5'] = df['close'] / df['ma5']
+        df['price_div_ma20'] = df['close'] / df['ma20']
         
         # 2. RSI (Relative Strength Index)
         delta = df['close'].diff()
@@ -114,8 +161,6 @@ class DataLoader:
         df['rsi'] = 100 - (100 / (1 + rs))
         
         # 3. Money Flow Proxy: (Close - Open) / (High - Low) * Volume
-        # This is a crude approximation of "Active Buying"
-        # If Close > Open, assume more buying.
         denom = df['high'] - df['low']
         denom = denom.replace(0, 1) # Avoid division by zero
         df['money_flow_proxy'] = ((df['close'] - df['open']) / denom) * df['volume']
@@ -134,6 +179,11 @@ class DataLoader:
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
+        
+        # Explicit MACD Death Cross / Golden Cross state (User Request)
+        # We can use macd_hist > 0 as a proxy for Golden Cross state
+        # Or explicit boolean
+        df['macd_bullish'] = (df['macd'] > df['macd_signal']).astype(float)
 
         # 6. Bollinger Bands (20, 2)
         df['bb_upper'] = df['ma20'] + 2 * df['close'].rolling(window=20).std()
@@ -145,12 +195,6 @@ class DataLoader:
         low_list = df['low'].rolling(window=9, min_periods=9).min()
         high_list = df['high'].rolling(window=9, min_periods=9).max()
         rsv = (df['close'] - low_list) / (high_list - low_list) * 100
-        
-        # KDJ calculation requires iteration or recursive calculation
-        # Pandas ewm can approximate, but standard KDJ is iterative.
-        # K = 2/3 * PrevK + 1/3 * RSV
-        # D = 2/3 * PrevD + 1/3 * K
-        # J = 3 * K - 2 * D
         
         k_list = []
         d_list = []
@@ -169,6 +213,11 @@ class DataLoader:
         df['kdj_k'] = k_list
         df['kdj_d'] = d_list
         df['kdj_j'] = 3 * df['kdj_k'] - 2 * df['kdj_d']
+        
+        # 8. Volume Change (User Request)
+        # Volume vs MA5 Volume
+        df['ma5_vol'] = df['volume'].rolling(window=5).mean()
+        df['vol_div_ma5_vol'] = df['volume'] / df['ma5_vol']
         
         # Fill NaNs
         df = df.bfill().ffill()

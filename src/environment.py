@@ -124,15 +124,52 @@ class HKStockSignalEnv(gym.Env):
         # Value at t+1 = Cash + Holdings * Price_t+1
         new_portfolio_value = self.cash + (self.holdings * next_price)
         
-        # Calculate Reward
-        # Reward = Log Return of Portfolio
-        portfolio_return = (new_portfolio_value - self.portfolio_value) / self.portfolio_value
+        # Calculate Reward v2.0 (Stable Trend + Volatility Penalty)
         
-        # Penalties
-        # 1. Turnover/Cost is already deducted from portfolio value, so it reflects in return.
-        # 2. Volatility penalty: We can penalize large negative returns more, or just use Sharpe-like later.
-        # For now, simple return is the reward.
-        reward = portfolio_return
+        # 1. Trend Reward (Lookahead 5 days)
+        lookahead = 5
+        if self.current_step + lookahead < len(self.dataset):
+            future_data = self.dataset[self.current_step + lookahead]
+            future_price = future_data['price']
+            # Calculate percentage change over next 5 days
+            trend_return = (future_price - current_price) / current_price
+        else:
+            # End of episode, fallback to daily return
+            trend_return = (next_price - current_price) / current_price
+            
+        # Reward is proportional to our position alignment with the trend
+        # If we are 100% long (1.0) and price goes up 5%, reward is 0.05
+        # If we are 0% long (0.0) and price goes up 5%, reward is 0.0
+        r_trend = self.current_position * trend_return
+        
+        # 2. Volatility Penalty
+        # Calculate std of recent daily returns (e.g., last 10 days)
+        # We need to track daily portfolio returns
+        daily_ret = (new_portfolio_value - self.portfolio_value) / self.portfolio_value
+        self.history.append(daily_ret)
+        
+        window_size = 10
+        if len(self.history) > window_size:
+            recent_vol = np.std(self.history[-window_size:])
+        else:
+            recent_vol = 0.0
+            
+        lambda_vol = 0.1 # Risk aversion coefficient
+        r_vol = lambda_vol * recent_vol
+        
+        # 3. Transaction Cost Penalty (Already in PnL, but we can add explicit penalty if needed)
+        # For now, let's rely on the fact that 'daily_ret' (used for history) includes cost.
+        # But r_trend does NOT include cost.
+        # Let's subtract cost from the reward explicitly to discourage churning.
+        # Cost ratio relative to portfolio value
+        cost_penalty = cost / self.portfolio_value
+        
+        # Total Reward
+        # We combine the long-term trend signal with the immediate cost and volatility risk
+        reward = r_trend - r_vol - cost_penalty
+        
+        # Scaling (Optional, PPO likes small rewards)
+        reward = reward * 10 # Scale up slightly if returns are very small (e.g. 0.001)
         
         # Update state
         self.portfolio_value = new_portfolio_value

@@ -9,7 +9,7 @@ class DataProcessor:
     Handles data loading and preprocessing for the RL agent.
     Supports both mock data and real data (AkShare + Qwen).
     """
-    def __init__(self, seq_len=10, embedding_dim=1536, n_features=9):
+    def __init__(self, seq_len=10, embedding_dim=1536, n_features=13):
         """
         Args:
             seq_len (int): Length of the sliding window.
@@ -96,6 +96,16 @@ class DataProcessor:
         feature_df['kdj_k'] = df['kdj_k']
         feature_df['kdj_d'] = df['kdj_d']
         feature_df['bb_pct_b'] = df['bb_pct_b']
+        
+        # New Features (User Request)
+        # feature_df['hsi_return'] = df['hsi_return'] # Removed
+        # feature_df['southbound_change'] = df['southbound_change'] # Removed
+        feature_df['price_div_ma5'] = df['price_div_ma5']
+        feature_df['price_div_ma20'] = df['price_div_ma20']
+        feature_df['vol_div_ma5_vol'] = df['vol_div_ma5_vol']
+        feature_df['macd_bullish'] = df['macd_bullish']
+        
+        # Total Features: 9 (Old) + 4 (New Technicals) = 13
         
         # Normalize
         df_normalized = (feature_df - feature_df.mean()) / feature_df.std()

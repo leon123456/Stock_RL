@@ -7,16 +7,16 @@ from src.environment import HKStockSignalEnv
 from src.model import FusionTransformerActorCritic
 import os
 
-def backtest_detailed():
-    print("=== Detailed Backtesting on 2023 Data (00700) ===")
+def backtest_detailed(symbol="00700"):
+    print(f"=== Detailed Backtesting on 2025 Data ({symbol}) ===")
     
-    # 1. Load Validation Data (2023)
-    symbol = "00700"
+    # 1. Load Validation Data (2025)
+    # symbol passed as arg
     start_date = "20250101"
     end_date = "20251120"
     
     print(f"Loading validation data for {symbol} from {start_date} to {end_date}...")
-    dp = DataProcessor(seq_len=10, embedding_dim=1536, n_features=9)
+    dp = DataProcessor(seq_len=10, embedding_dim=1536, n_features=13)
     
     # We need to get the dates back. 
     # load_real_data returns (df_norm, embeddings, raw_prices)
@@ -56,17 +56,19 @@ def backtest_detailed():
     
     # 3. Load Model
     model = FusionTransformerActorCritic(
-        num_features=9,
+        num_features=13,
         seq_len=10,
         text_dim=1536,
         hidden_dim=64,
         action_dim=5
     )
+    
+    model_path = f"models/ppo_actor_critic_{symbol}.pth"
     try:
-        model.load_state_dict(torch.load("models/ppo_actor_critic_real.pth"))
-        print("Model loaded successfully.")
+        model.load_state_dict(torch.load(model_path))
+        print(f"Model loaded successfully from {model_path}")
     except FileNotFoundError:
-        print("Error: Model file not found. Please train first.")
+        print(f"Error: Model file {model_path} not found. Please train first.")
         return
     
     # 4. Run Backtest
@@ -113,7 +115,7 @@ def backtest_detailed():
         
     # 5. Save Logs
     log_df = pd.DataFrame(logs)
-    log_file = "backtest_logs_2025.csv"
+    log_file = f"backtest_logs_{symbol}_2025.csv"
     log_df.to_csv(log_file, index=False)
     print(f"Detailed logs saved to {log_file}")
     
@@ -132,31 +134,55 @@ def backtest_detailed():
     portfolio_values = log_df['Portfolio Value']
     prices = log_df['Price']
     
+    # Extract actions for plotting
+    # Action string format: "0% (Clear)" -> 0
+    # We need to map back or just use the raw action if we had it.
+    # The log has "Action" column as string.
+    # Let's reverse map or just parse.
+    # Map: "0% (Clear)" -> 0, "25% (Light)" -> 1, etc.
+    action_map_rev = {
+        "0% (Clear)": 0, 
+        "25% (Light)": 1, 
+        "50% (Medium)": 2, 
+        "75% (Heavy)": 3, 
+        "100% (Full)": 4
+    }
+    # Handle potential raw numbers if any
+    actions = log_df['Action'].apply(lambda x: action_map_rev.get(x, 0))
+    
     # Normalize for comparison
-    # Portfolio starts at 1.0 (or initial_balance)
-    # Price starts at 1.0 (relative to first day)
     norm_portfolio = portfolio_values / initial_balance
     norm_price = prices / prices.iloc[0]
     
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(12, 10))
     
-    # Plot Curves
+    # Subplot 1: Portfolio vs Benchmark
+    plt.subplot(2, 1, 1)
     plt.plot(dates, norm_portfolio, label=f'Strategy (Return: {ret:.2f}%)', color='blue', linewidth=2)
     plt.plot(dates, norm_price, label=f'Benchmark (Buy & Hold)', color='gray', linestyle='--', alpha=0.7)
-    
-    # Plot Buy/Sell Markers (Optional, but nice)
-    # We can mark days where Action changed significantly or was Full
-    # For simplicity, let's just show the curves first as requested.
-    
     plt.title(f"Backtest Result: {symbol} ({start_date} - {end_date})")
-    plt.xlabel("Date")
     plt.ylabel("Normalized Value (Start=1.0)")
     plt.legend()
     plt.grid(True, alpha=0.3)
     
-    plot_file = f"backtest_result_{start_date[:4]}.png"
+    # Subplot 2: Daily Target Position
+    plt.subplot(2, 1, 2)
+    plt.plot(dates, actions, marker='o', linestyle='-', markersize=3, color='orange', label='Target Position')
+    plt.yticks([0, 1, 2, 3, 4], ['0%', '25%', '50%', '75%', '100%'])
+    plt.ylabel("Position")
+    plt.xlabel("Date")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    plt.tight_layout()
+    
+    plot_file = f"backtest_result_{symbol}_2025.png"
     plt.savefig(plot_file)
     print(f"Backtest plot saved to {plot_file}")
 
 if __name__ == "__main__":
-    backtest_detailed()
+    import sys
+    if len(sys.argv) > 1:
+        backtest_detailed(sys.argv[1])
+    else:
+        backtest_detailed("00700")

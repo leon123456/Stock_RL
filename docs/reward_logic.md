@@ -31,13 +31,28 @@ $$ R_t = \frac{V_{t+1} - V_t}{V_t} $$
 
 ## Planned Version: v2.0 (Risk-Adjusted)
 
-为了解决 v1.0 的风险无感问题，计划引入夏普比率（Sharpe Ratio）或索提诺比率（Sortino Ratio）的变体作为奖励。
+为了解决 v1.0 的风险无感问题，我们将引入 **波动率惩罚 (Volatility Penalty)**。
 
-### 拟定公式
-$$ R_t = Return_t - \lambda \times (Volatility_t) $$
+## Planned Version: v2.0 (Stable Trend & Risk-Adjusted)
 
-或者使用 **差分夏普比率 (Differential Sharpe Ratio)**。
+### 核心思想
+1.  **拉长视野**: 用户指出每日变动太快，建议看未来一周（5天）的数据。
+2.  **惩罚波动**: 抑制震荡市中的频繁开仓。
 
-### 待办事项
-- [ ] 在 `src/environment.py` 中实现波动率惩罚。
-- [ ] 引入最大回撤（Max Drawdown）作为终止条件或强惩罚项。
+### 公式
+$$ R_t = R_{trend} - \lambda_{vol} \times Volatility - \text{Cost} $$
+
+其中：
+*   **$R_{trend}$ (趋势奖励)**:
+    $$ R_{trend} = Position_t \times \frac{Price_{t+5} - Price_t}{Price_t} $$
+    *   如果当前做多，且未来5天涨了，给正奖励。
+    *   如果当前做多，且未来5天跌了，给负奖励。
+    *   *注意*: 这利用了训练时的全量数据“上帝视角”，但在推理(Backtest)时无法计算（Backtest只看净值曲线，不训练）。
+
+*   **$Volatility$ (波动惩罚)**:
+    $$ Volatility = \text{std}(Returns_{t-10...t}) $$
+    *   惩罚近期的市场波动或策略波动。
+
+### 实现细节
+*   在 `HKStockSignalEnv` 中，`step()` 函数需要访问 `t+5` 的数据。
+*   如果 `t+5` 超出边界，则使用剩余天数的收益或 0。
